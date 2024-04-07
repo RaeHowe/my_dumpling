@@ -83,6 +83,8 @@ func NewDumper(ctx context.Context, conf *Config) (*Dumper, error) {
 // Dump dumps table from database
 // nolint: gocyclo
 func (d *Dumper) Dump() (dumpErr error) {
+
+	//获取到tidb里面列的所有数据类型集合，然后初始化三个map（dataTypeString, dataTypeNum, dataTypeBin），这三个map对应了不同的数据类型集合，比如字符串类型，数据类型，二进制类型
 	initColTypeRowReceiverMap()
 	var (
 		conn    *sql.Conn
