@@ -635,7 +635,7 @@ func getSnapshot(db *sql.Conn) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return str[snapshotFieldIndex], nil
+	return str[snapshotFieldIndex], nil //把tso返回
 }
 
 func isUnknownSystemVariableErr(err error) bool {
@@ -912,7 +912,7 @@ func buildLockTablesSQL(allTables DatabaseTables, blockList map[string]map[strin
 				}
 			}
 			if !n {
-				fmt.Fprintf(s, "LOCK TABLES `%s`.`%s` READ", escapedDBName, escapeString(table.Name))
+				fmt.Fprintf(s, "LOCK TABLES `%s`.`%s` READ", escapedDBName, escapeString(table.Name)) //拼接所有需要备份的表的加读锁的SQL语句
 				n = true
 			} else {
 				fmt.Fprintf(s, ",`%s`.`%s` READ", escapedDBName, escapeString(table.Name))

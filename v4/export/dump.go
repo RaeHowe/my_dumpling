@@ -76,11 +76,11 @@ func NewDumper(ctx context.Context, conf *Config) (*Dumper, error) {
 		detectServerInfo,       //连接tidb数据库获取到tidb的版本信息
 		resolveAutoConsistency, //根据数据库的类型，选择不用的一致性保证措施。如果是MySQL就采用FTWRL的方式加全局读锁来进行逻辑备份；如果是tidb的话，就直接采用snapshot的方式进行逻辑备份
 
-		tidbSetPDClientForGC, //获取到pd，用于获取safepoint，保证逻辑备份数据的有效性（gc前的数据有可能会被删掉，不能进行备份）
-		tidbGetSnapshot,      //
-		tidbStartGCSavepointUpdateService,
+		tidbSetPDClientForGC,              //获取到pd，用于获取safepoint，保证逻辑备份数据的有效性（gc前的数据有可能会被删掉，不能进行备份）
+		tidbGetSnapshot,                   //执行show master status这个SQL，获取到最新的tso
+		tidbStartGCSavepointUpdateService, //更新pd里面的safepoint
 
-		setSessionParam)
+		setSessionParam) //设置dumpling连接数据库的时候，session级别的系统变量
 	return d, err
 }
 
@@ -99,8 +99,8 @@ func (d *Dumper) Dump() (dumpErr error) {
 	tctx.L().Info("begin to run Dump", zap.Stringer("conf", conf))
 
 	//请注意这里的第三个参数：snapshot，在tidb里面的逻辑备份，并不会类似于mysql加全局锁，而是通过tidb_snap系统变量的时间设置，来获取到指定时间的数据历史版本
-	m := newGlobalMetadata(tctx, d.extStore, conf.Snapshot)
-	repeatableRead := needRepeatableRead(conf.ServerInfo.ServerType, conf.Consistency)
+	m := newGlobalMetadata(tctx, d.extStore, conf.Snapshot)                            //第二个参数是外部存储
+	repeatableRead := needRepeatableRead(conf.ServerInfo.ServerType, conf.Consistency) //这行逻辑会判断，只有MySQL数据库才设置隔离级别为rr
 	defer func() {
 		if dumpErr == nil {
 			_ = m.writeGlobalMetaData()
@@ -108,23 +108,23 @@ func (d *Dumper) Dump() (dumpErr error) {
 	}()
 
 	// for consistency lock, we should get table list at first to generate the lock tables SQL
-	if conf.Consistency == consistencyTypeLock {
-		conn, err = createConnWithConsistency(tctx, pool, repeatableRead)
+	if conf.Consistency == consistencyTypeLock { //如果一致性保证使用lock方式的话，就代表给所有需要备份的表加读锁，这里会生成——给这些表加读锁的SQL语句
+		conn, err = createConnWithConsistency(tctx, pool, repeatableRead) //createConnWithConsistency方法内部的逻辑和mysqldump真的是完全一致的，先设置事务隔离级别，然后start transaction with consistent snapshot开启一个事务
 		if err != nil {
 			return errors.Trace(err)
 		}
-		if err = prepareTableListToDump(tctx, conf, conn); err != nil {
+		if err = prepareTableListToDump(tctx, conf, conn); err != nil { //列出需要备份的库、表（过滤之后），过滤后的库和表信息都会被放置到**conf**对象的参数里面去
 			conn.Close()
 			return err
 		}
 		conn.Close()
 	}
 
-	conCtrl, err = NewConsistencyController(tctx, conf, pool)
+	conCtrl, err = NewConsistencyController(tctx, conf, pool) //根据一致性保证的方式创建一致性controller出来
 	if err != nil {
 		return err
 	}
-	if err = conCtrl.Setup(tctx); err != nil {
+	if err = conCtrl.Setup(tctx); err != nil { //根据一致性保证的方式不同，采用不同的setup方式；这里面包括了针对lock, flush, none三种模式的处理
 		return errors.Trace(err)
 	}
 	// To avoid lock is not released
@@ -140,7 +140,7 @@ func (d *Dumper) Dump() (dumpErr error) {
 		return err
 	}
 	defer metaConn.Close()
-	m.recordStartTime(time.Now())
+	m.recordStartTime(time.Now()) //开始备份，记录开始时间
 	// for consistency lock, we can write snapshot info after all tables are locked.
 	// the binlog pos may changed because there is still possible write between we lock tables and write master status.
 	// but for the locked tables doing replication that starts from metadata is safe.
@@ -874,21 +874,21 @@ func getListTableTypeByConf(conf *Config) listTableType {
 }
 
 func prepareTableListToDump(tctx *tcontext.Context, conf *Config, db *sql.Conn) error {
-	databases, err := prepareDumpingDatabases(tctx, conf, db)
+	databases, err := prepareDumpingDatabases(tctx, conf, db) //获取到需要备份的数据库信息（过滤之后的）
 	if err != nil {
 		return err
 	}
 
 	tableTypes := []TableType{TableTypeBase}
-	if !conf.NoViews {
+	if !conf.NoViews { //view视图(默认是true，如果为false ，就代表也需要备份view )
 		tableTypes = append(tableTypes, TableTypeView)
 	}
-	conf.Tables, err = ListAllDatabasesTables(tctx, db, databases, getListTableTypeByConf(conf), tableTypes...)
+	conf.Tables, err = ListAllDatabasesTables(tctx, db, databases, getListTableTypeByConf(conf), tableTypes...) //获取到库里面的所有表嘻嘻
 	if err != nil {
 		return err
 	}
 
-	filterTables(tctx, conf)
+	filterTables(tctx, conf) //表过滤（可能只需要备份某张表）
 	return nil
 }
 
@@ -1122,7 +1122,7 @@ func tidbGetSnapshot(d *Dumper) error {
 			tctx.L().Warn("cannot get snapshot from TiDB", log.ShortError(err))
 			return nil
 		}
-		snapshot, err := getSnapshot(conn)
+		snapshot, err := getSnapshot(conn) //snapshot就是执行show master的时候的tso
 		_ = conn.Close()
 		if err != nil {
 			tctx.L().Warn("cannot get snapshot from TiDB", log.ShortError(err))
@@ -1143,7 +1143,7 @@ func tidbStartGCSavepointUpdateService(d *Dumper) error {
 		if err != nil {
 			return err
 		}
-		go updateServiceSafePoint(tctx, d.tidbPDClientForGC, defaultDumpGCSafePointTTL, snapshotTS)
+		go updateServiceSafePoint(tctx, d.tidbPDClientForGC, defaultDumpGCSafePointTTL, snapshotTS) //br源码里面也有类似这样的逻辑，甚至方法名都是相同的。方法的逻辑是访问pd，并且去修改pd里面维持的safepoint时间
 	} else if si.ServerType == ServerTypeTiDB {
 		tctx.L().Warn("If the amount of data to dump is large, criteria: (data more than 60GB or dumped time more than 10 minutes)\n" +
 			"you'd better adjust the tikv_gc_life_time to avoid export failure due to TiDB GC during the dump process.\n" +
@@ -1156,7 +1156,7 @@ func tidbStartGCSavepointUpdateService(d *Dumper) error {
 func updateServiceSafePoint(tctx *tcontext.Context, pdClient pd.Client, ttl int64, snapshotTS uint64) {
 	updateInterval := time.Duration(ttl/2) * time.Second
 	tick := time.NewTicker(updateInterval)
-	dumplingServiceSafePointID := fmt.Sprintf("%s_%d", dumplingServiceSafePointPrefix, time.Now().UnixNano())
+	dumplingServiceSafePointID := fmt.Sprintf("%s_%d", dumplingServiceSafePointPrefix, time.Now().UnixNano()) //safepoint都得有个id，br也是，不知道为啥得要个id
 	tctx.L().Info("generate dumpling gc safePoint id", zap.String("id", dumplingServiceSafePointID))
 
 	for {
@@ -1193,17 +1193,17 @@ func setSessionParam(d *Dumper) error {
 		sessionParam[TiDBMemQuotaQueryName] = conf.TiDBMemQuotaQuery
 	}
 	var err error
-	if snapshot != "" {
-		if si.ServerType != ServerTypeTiDB {
+	if snapshot != "" { //在外面方法栈的tidbGetSnapshot方法里面，如果引擎为tidb的话，就会设置这个snapshot
+		if si.ServerType != ServerTypeTiDB { //只有tidb数据库才支持snapshot一致性方式
 			return errors.New("snapshot consistency is not supported for this server")
 		}
 		if consistency == consistencyTypeSnapshot {
-			conf.ServerInfo.HasTiKV, err = CheckTiDBWithTiKV(pool)
+			conf.ServerInfo.HasTiKV, err = CheckTiDBWithTiKV(pool) //这里通过sql去判断tidb是否有tikv，这里不是很理解为什么要有这样一个操作
 			if err != nil {
 				d.L().Warn("fail to check whether TiDB has TiKV", log.ShortError(err))
 			}
 			if conf.ServerInfo.HasTiKV {
-				sessionParam["tidb_snapshot"] = snapshot
+				sessionParam["tidb_snapshot"] = snapshot //如果有tikv的话，就针对这个session设置环境变量tidb_snapshot，去读取数据
 			}
 		}
 	}

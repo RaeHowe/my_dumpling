@@ -78,11 +78,11 @@ func ParseOutputFileTemplate(text string) (*template.Template, error) {
 }
 
 func prepareDumpingDatabases(tctx *tcontext.Context, conf *Config, db *sql.Conn) ([]string, error) {
-	databases, err := ShowDatabases(db)
+	databases, err := ShowDatabases(db) //获取到数据库库里面所有的库信息
 	if err != nil {
 		return nil, err
 	}
-	databases = filterDatabases(tctx, conf, databases)
+	databases = filterDatabases(tctx, conf, databases) //如果只备份指定库的话，这里会进行一个过滤
 	if len(conf.Databases) == 0 {
 		return databases, nil
 	}

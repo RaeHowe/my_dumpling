@@ -27,22 +27,22 @@ func NewConsistencyController(ctx context.Context, conf *Config, session *sql.DB
 		return nil, errors.Trace(err)
 	}
 	switch conf.Consistency {
-	case consistencyTypeFlush:
+	case consistencyTypeFlush: //加FTWRL
 		return &ConsistencyFlushTableWithReadLock{
 			serverType: conf.ServerInfo.ServerType,
 			conn:       conn,
 		}, nil
-	case consistencyTypeLock:
+	case consistencyTypeLock: //导出的所有表加读锁
 		return &ConsistencyLockDumpingTables{
 			conn: conn,
 			conf: conf,
 		}, nil
-	case consistencyTypeSnapshot:
+	case consistencyTypeSnapshot: //tidb的snapshot
 		if conf.ServerInfo.ServerType != ServerTypeTiDB {
 			return nil, errors.New("snapshot consistency is not supported for this server")
 		}
 		return &ConsistencyNone{}, nil
-	case consistencyTypeNone:
+	case consistencyTypeNone: //不做任何一致性保证。
 		return &ConsistencyNone{}, nil
 	default:
 		return nil, errors.Errorf("invalid consistency option %s", conf.Consistency)
@@ -118,7 +118,7 @@ type ConsistencyLockDumpingTables struct {
 func (c *ConsistencyLockDumpingTables) Setup(tctx *tcontext.Context) error {
 	blockList := make(map[string]map[string]interface{})
 	return utils.WithRetry(tctx, func() error {
-		lockTablesSQL := buildLockTablesSQL(c.conf.Tables, blockList)
+		lockTablesSQL := buildLockTablesSQL(c.conf.Tables, blockList) ////拼接所有需要备份的表的加读锁的SQL语句
 		_, err := c.conn.ExecContext(tctx, lockTablesSQL)
 		if err == nil {
 			if len(blockList) > 0 {
