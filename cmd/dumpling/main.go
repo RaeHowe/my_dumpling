@@ -66,12 +66,12 @@ func main() {
 	export.InitMetricsVector(conf.Labels)
 	export.RegisterMetrics(registry)
 	prometheus.DefaultGatherer = registry
-	dumper, err := export.NewDumper(context.Background(), conf)
+	dumper, err := export.NewDumper(context.Background(), conf) //初始化dumper对象，调整配置参数
 	if err != nil {
 		fmt.Printf("\ncreate dumper failed: %s\n", err.Error())
 		os.Exit(1)
 	}
-	err = dumper.Dump()
+	err = dumper.Dump() //核心方法入口
 	dumper.Close()
 	if err != nil {
 		dumper.L().Error("dump failed error stack info", zap.Error(err))

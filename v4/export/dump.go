@@ -57,23 +57,27 @@ func NewDumper(ctx context.Context, conf *Config) (*Dumper, error) {
 		cancelCtx:                 cancelFn,
 		selectTiDBTableRegionFunc: selectTiDBTableRegion,
 	}
+
+	//用户输入的参数进行合法性校验
 	err := adjustConfig(conf,
 		registerTLSConfig,
 		validateSpecifiedSQL,
-		adjustFileFormat)
+		adjustFileFormat) //导出文件格式判断
 	if err != nil {
 		return nil, err
 	}
+
+	//分别执行下面一串方法，每个方法的参数都是d这个变量，注意d是指针类型，由上到下的顺序执行过程中，d的属性可能会发生变化
 	err = runSteps(d,
 		initLogger,
-		createExternalStore,
+		createExternalStore, //导出的逻辑备份文件如果放置到外部存储的话
 		startHTTPService,
-		openSQLDB,
-		detectServerInfo,
-		resolveAutoConsistency,
+		openSQLDB,              //打开数据库，应该是tidb
+		detectServerInfo,       //连接tidb数据库获取到tidb的版本信息
+		resolveAutoConsistency, //根据数据库的类型，选择不用的一致性保证措施。如果是MySQL就采用FTWRL的方式加全局读锁来进行逻辑备份；如果是tidb的话，就直接采用snapshot的方式进行逻辑备份
 
-		tidbSetPDClientForGC,
-		tidbGetSnapshot,
+		tidbSetPDClientForGC, //获取到pd，用于获取safepoint，保证逻辑备份数据的有效性（gc前的数据有可能会被删掉，不能进行备份）
+		tidbGetSnapshot,      //
 		tidbStartGCSavepointUpdateService,
 
 		setSessionParam)
@@ -93,6 +97,8 @@ func (d *Dumper) Dump() (dumpErr error) {
 	)
 	tctx, conf, pool := d.tctx, d.conf, d.dbHandle
 	tctx.L().Info("begin to run Dump", zap.Stringer("conf", conf))
+
+	//请注意这里的第三个参数：snapshot，在tidb里面的逻辑备份，并不会类似于mysql加全局锁，而是通过tidb_snap系统变量的时间设置，来获取到指定时间的数据历史版本
 	m := newGlobalMetadata(tctx, d.extStore, conf.Snapshot)
 	repeatableRead := needRepeatableRead(conf.ServerInfo.ServerType, conf.Consistency)
 	defer func() {
@@ -975,6 +981,7 @@ func (d *Dumper) Close() error {
 	return nil
 }
 
+// 这方法设计的巧妙，以后可以试着用用
 func runSteps(d *Dumper, steps ...func(*Dumper) error) error {
 	for _, st := range steps {
 		err := st(d)

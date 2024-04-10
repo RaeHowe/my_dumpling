@@ -592,6 +592,7 @@ var (
 
 // ParseServerInfo parses exported server type and version info from version string
 func ParseServerInfo(tctx *tcontext.Context, src string) ServerInfo {
+	//src: 5.7.25-TiDB-v6.5.2
 	tctx.L().Debug("parse server info", zap.String("server info string", src))
 	lowerCase := strings.ToLower(src)
 	serverInfo := ServerInfo{}
@@ -716,6 +717,7 @@ func validateSpecifiedSQL(conf *Config) error {
 }
 
 func adjustFileFormat(conf *Config) error {
+	//判断导出的文件类型，dumpling支持csv和sql两种格式，其他格式报错
 	conf.FileType = strings.ToLower(conf.FileType)
 	switch conf.FileType {
 	case "":
@@ -725,7 +727,7 @@ func adjustFileFormat(conf *Config) error {
 			conf.FileType = FileFormatSQLTextString
 		}
 	case FileFormatSQLTextString:
-		if conf.SQL != "" {
+		if conf.SQL != "" { //conf里面的sql代表了根据指定的sql导出数据，如果不为空，那么导出的内容就应该是直接的数据了，因为通过sql语句去查询到的是数据
 			return errors.Errorf("unsupported config.FileType '%s' when we specify --sql, please unset --filetype or set it to 'csv'", conf.FileType)
 		}
 	case FileFormatCSVString:

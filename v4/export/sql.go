@@ -281,7 +281,7 @@ func ListAllDatabasesTables(tctx *tcontext.Context, db *sql.Conn, databaseNames 
 // SelectVersion gets the version information from the database server
 func SelectVersion(db *sql.DB) (string, error) {
 	var versionInfo string
-	const query = "SELECT version()"
+	const query = "SELECT version()" //查询tidb版本： 5.7.25-TiDB-v6.5.2
 	row := db.QueryRow(query)
 	err := row.Scan(&versionInfo)
 	if err != nil {
@@ -497,7 +497,18 @@ func ShowMasterStatus(db *sql.Conn) ([]string, error) {
 		}
 		return rows.Scan(addr...)
 	}
-	const showMasterStatusQuery = "SHOW MASTER STATUS"
+	const showMasterStatusQuery = "SHOW MASTER STATUS" //tidb里面执行show master status是获取最新的tso
+
+	/*
+		+-------------+--------------------+--------------+------------------+-------------------+
+		| File        | Position           | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
+		+-------------+--------------------+--------------+------------------+-------------------+
+		| tidb-binlog | 448985895168114689 |              |                  |                   |
+		+-------------+--------------------+--------------+------------------+-------------------+
+
+			这里面448985895168114689就是tso信息
+	*/
+
 	err := simpleQuery(db, showMasterStatusQuery, handleOneRow)
 	if err != nil {
 		return nil, errors.Annotatef(err, "sql: %s", showMasterStatusQuery)
