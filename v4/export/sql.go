@@ -1007,7 +1007,7 @@ func estimateCount(tctx *tcontext.Context, dbName, tableName string, db *sql.Con
 		|  1 | SIMPLE      | t1    | NULL       | index | NULL          | multi_col | 10      | NULL |    5 |   100.00 | Using index |
 		+----+-------------+-------+------------+-------+---------------+-----------+---------+------+------+----------+-------------+
 	*/
-	if estRows > 0 {
+	if estRows > 0 { //区分tidb和mysql
 		return estRows
 	}
 	return 0

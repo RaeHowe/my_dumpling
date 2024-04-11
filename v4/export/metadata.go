@@ -65,6 +65,7 @@ func (m *globalMetadata) recordGlobalMetaData(db *sql.Conn, serverType ServerTyp
 	return recordGlobalMetaData(m.tctx, db, &m.buffer, serverType, afterConn, m.snapshot)
 }
 
+// recordGlobalMetaData 通过show master status，来获取到binlog的信息，来放置到参数buffer里面
 func recordGlobalMetaData(tctx *tcontext.Context, db *sql.Conn, buffer *bytes.Buffer, serverType ServerType, afterConn bool, snapshot string) error { // revive:disable-line:flag-parameter
 	writeMasterStatusHeader := func() {
 		buffer.WriteString("SHOW MASTER STATUS:")
@@ -102,15 +103,15 @@ func recordGlobalMetaData(tctx *tcontext.Context, db *sql.Conn, buffer *bytes.Bu
 		logFile := getValidStr(str, fileFieldIndex)
 		var pos string
 		if serverType == ServerTypeTiDB && snapshot != "" {
-			pos = snapshot
+			pos = snapshot //如果是tidb的话就用snapshot，也就是tso
 		} else {
-			pos = getValidStr(str, posFieldIndex)
+			pos = getValidStr(str, posFieldIndex) //如果是MySQL的话，就用binlog的pos
 		}
-		gtidSet := getValidStr(str, gtidSetFieldIndex)
+		gtidSet := getValidStr(str, gtidSetFieldIndex) //MySQL才有gtid，tidb没有
 
 		if logFile != "" {
 			writeMasterStatusHeader()
-			fmt.Fprintf(buffer, "\tLog: %s\n\tPos: %s\n\tGTID:%s\n", logFile, pos, gtidSet)
+			fmt.Fprintf(buffer, "\tLog: %s\n\tPos: %s\n\tGTID:%s\n", logFile, pos, gtidSet) //Log: tidb-binlog Pos: 415195906970746880 GTID:
 		}
 	// For MariaDB:
 	// SHOW MASTER STATUS;
@@ -160,6 +161,8 @@ func recordGlobalMetaData(tctx *tcontext.Context, db *sql.Conn, buffer *bytes.Bu
 		isms  bool
 		query string
 	)
+
+	//如果是tidb的话，上面就直接返回了；如果是MySQL的话，还得考虑MySQL的主从复制，从库的备份逻辑
 	if err := simpleQuery(db, "SELECT @@default_master_connection", func(rows *sql.Rows) error {
 		isms = true
 		return nil

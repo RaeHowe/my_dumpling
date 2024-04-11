@@ -141,24 +141,34 @@ func (d *Dumper) Dump() (dumpErr error) {
 	}
 	defer metaConn.Close()
 	m.recordStartTime(time.Now()) //开始备份，记录开始时间
-	// for consistency lock, we can write snapshot info after all tables are locked.
-	// the binlog pos may changed because there is still possible write between we lock tables and write master status.
-	// but for the locked tables doing replication that starts from metadata is safe.
-	// for consistency flush, record snapshot after whole tables are locked. The recorded meta info is exactly the locked snapshot.
-	// for consistency snapshot, we should use the snapshot that we get/set at first in metadata. TiDB will assure the snapshot of TSO.
-	// for consistency none, the binlog pos in metadata might be earlier than dumped data. We need to enable safe-mode to assure data safety.
-	err = m.recordGlobalMetaData(metaConn, conf.ServerInfo.ServerType, false)
+
+	//针对不同的一致性保证策略，采取不同的策略
+
+	// lock
+	// for consistency lock, we can write snapshot info after all tables are locked. 对于给表加读锁的策略，会在所有需要进行备份的表加完读锁之后，来记录snapshot信息
+	// the binlog pos may changed because there is still possible write between we lock tables and write master status. //binlog的pod可能会被改变，因为在锁表和写主状态之间仍然有可能进行写操作
+	// but for the locked tables doing replication that starts from metadata is safe. //但是对于锁定的表，从元数据开始进行复制是安全的。
+
+	// flush
+	// for consistency flush, record snapshot after whole tables are locked. The recorded meta info is exactly the locked snapshot. //对于flush策略，在FTWRL后记录snapshot。记录的元信息正是被锁定的快照数据的元数据信息。
+
+	// snapshot
+	// for consistency snapshot, we should use the snapshot that we get/set at first in metadata. TiDB will assure the snapshot of TSO. //我们应该使用我们在元数据中首先获得/设置的快照。TiDB将保证TSO的快照。
+
+	// none
+	// for consistency none, the binlog pos in metadata might be earlier than dumped data. We need to enable safe-mode to assure data safety. //元数据中的binlog位置可能早于转储数据。我们需要启用安全模式以确保数据安全。
+	err = m.recordGlobalMetaData(metaConn, conf.ServerInfo.ServerType, false) //获取到的binlog信息会放置到m对象的buffer里面
 	if err != nil {
 		tctx.L().Info("get global metadata failed", zap.Error(err))
 	}
 
-	// for other consistencies, we should get table list after consistency is set up and GlobalMetaData is cached
+	// for other consistencies, we should get table list after consistency is set up and GlobalMetaData is cached //对于其他一致性，我们应该在建立一致性并缓存GlobalMetaData之后获得需要备份的所有表信息
 	if conf.Consistency != consistencyTypeLock {
-		if err = prepareTableListToDump(tctx, conf, metaConn); err != nil {
+		if err = prepareTableListToDump(tctx, conf, metaConn); err != nil { //得到的需要备份的表和库的信息会放置到conf里面
 			return err
 		}
 	}
-	if err = d.renewSelectTableRegionFuncForLowerTiDB(tctx); err != nil {
+	if err = d.renewSelectTableRegionFuncForLowerTiDB(tctx); err != nil { //只有tidb 3.x版本才需要重新构建region信息
 		tctx.L().Error("fail to update select table region info for TiDB", zap.Error(err))
 	}
 
@@ -186,15 +196,21 @@ func (d *Dumper) Dump() (dumpErr error) {
 	}
 
 	taskChan := make(chan Task, defaultDumpThreads)
-	AddGauge(taskChannelCapacity, conf.Labels, defaultDumpThreads)
+	AddGauge(taskChannelCapacity, conf.Labels, defaultDumpThreads) //监控
 	wg, writingCtx := errgroup.WithContext(tctx)
 	writerCtx := tctx.WithContext(writingCtx)
+
+	/*
+		下面这行逻辑很重要,是真正把task任务生成对应sql、csv文件内容的逻辑
+		初始化writer对象，给writer对象加一些回调函数用于监控使用。然后writer会对应了很多的task，每种类型的task由指定的消费者去进行消费执行
+	*/
 	writers, tearDownWriters, err := d.startWriters(writerCtx, wg, taskChan, rebuildConn)
 	if err != nil {
 		return err
 	}
 	defer tearDownWriters()
 
+	//在mysqldump里面，备份完非事务性的表之后，就可以释放表的读锁了，事务表的备份是通过事务RR隔离级别构建read view来进行实现的
 	if conf.TransactionalConsistency {
 		if conf.Consistency == consistencyTypeFlush || conf.Consistency == consistencyTypeLock {
 			tctx.L().Info("All the dumping transactions have started. Start to unlock tables")
@@ -236,7 +252,7 @@ func (d *Dumper) Dump() (dumpErr error) {
 	})
 
 	if conf.SQL == "" {
-		if err = d.dumpDatabases(writerCtx, metaConn, taskChan); err != nil && !errors.ErrorEqual(err, context.Canceled) {
+		if err = d.dumpDatabases(writerCtx, metaConn, taskChan); err != nil && !errors.ErrorEqual(err, context.Canceled) { //生成建库建表建数据语句，放置到taskChan这个channel里面
 			return err
 		}
 	} else {
@@ -251,7 +267,7 @@ func (d *Dumper) Dump() (dumpErr error) {
 	summary.CollectSuccessUnit("dump cost", countTotalTask(writers), time.Since(tableDataStartTime))
 
 	summary.SetSuccessStatus(true)
-	m.recordFinishTime(time.Now())
+	m.recordFinishTime(time.Now()) //记录备份完毕时间
 	return nil
 }
 
@@ -259,14 +275,14 @@ func (d *Dumper) startWriters(tctx *tcontext.Context, wg *errgroup.Group, taskCh
 	rebuildConnFn func(*sql.Conn) (*sql.Conn, error)) ([]*Writer, func(), error) {
 	conf, pool := d.conf, d.dbHandle
 	writers := make([]*Writer, conf.Threads)
-	for i := 0; i < conf.Threads; i++ {
+	for i := 0; i < conf.Threads; i++ { //参数配置并发量，并发度是多少就启动多少个协程
 		conn, err := createConnWithConsistency(tctx, pool, needRepeatableRead(conf.ServerInfo.ServerType, conf.Consistency))
 		if err != nil {
 			return nil, func() {}, err
 		}
 		writer := NewWriter(tctx, int64(i), conf, conn, d.extStore)
 		writer.rebuildConnFn = rebuildConnFn
-		writer.setFinishTableCallBack(func(task Task) {
+		writer.setFinishTableCallBack(func(task Task) { //回调函数，备份完一个表监控就加一
 			if _, ok := task.(*TaskTableData); ok {
 				IncCounter(finishedTablesCounter, conf.Labels)
 				// FIXME: actually finishing the last chunk doesn't means this table is 'finished'.
@@ -286,8 +302,8 @@ func (d *Dumper) startWriters(tctx *tcontext.Context, wg *errgroup.Group, taskCh
 					zap.Int("chunkIdx", td.ChunkIndex))
 			}
 		})
-		wg.Go(func() error {
-			return writer.run(taskChan)
+		wg.Go(func() error { //启动协程，传channel进去，如果channel里面有goroutine的话，就在run里面消费执行，没有就卡住
+			return writer.run(taskChan) //***********这行逻辑很重要，建表建库建数据的task任务都会被放置到taskChan这个channel里面，这里面启协程去处理这些任务************
 		})
 		writers[i] = writer
 	}
@@ -304,7 +320,7 @@ func (d *Dumper) dumpDatabases(tctx *tcontext.Context, metaConn *sql.Conn, taskC
 	allTables := conf.Tables
 	for dbName, tables := range allTables {
 		if !conf.NoSchemas {
-			createDatabaseSQL, err := ShowCreateDatabase(metaConn, dbName)
+			createDatabaseSQL, err := ShowCreateDatabase(metaConn, dbName) //生成建库语句
 			if err != nil {
 				return err
 			}
@@ -318,19 +334,22 @@ func (d *Dumper) dumpDatabases(tctx *tcontext.Context, metaConn *sql.Conn, taskC
 		for _, table := range tables {
 			tctx.L().Debug("start dumping table...", zap.String("database", dbName),
 				zap.String("table", table.Name))
-			meta, err := dumpTableMeta(conf, metaConn, dbName, table)
+			meta, err := dumpTableMeta(conf, metaConn, dbName, table) //生成建表语句
 			if err != nil {
 				return err
 			}
 
+			//no-schemas代表只导出数据不导出schema信息
 			if !conf.NoSchemas {
-				if table.Type == TableTypeView {
+				//需要导出数据和schema信息
+				if table.Type == TableTypeView { //视图类型的表
 					task := NewTaskViewMeta(dbName, table.Name, meta.ShowCreateTable(), meta.ShowCreateView())
 					ctxDone := d.sendTaskToChan(tctx, task, taskChan)
 					if ctxDone {
 						return tctx.Err()
 					}
 				} else {
+					//普通数据表
 					task := NewTaskTableMeta(dbName, table.Name, meta.ShowCreateTable())
 					ctxDone := d.sendTaskToChan(tctx, task, taskChan)
 					if ctxDone {
@@ -339,7 +358,7 @@ func (d *Dumper) dumpDatabases(tctx *tcontext.Context, metaConn *sql.Conn, taskC
 				}
 			}
 			if table.Type == TableTypeBase {
-				err = d.dumpTableData(tctx, metaConn, meta, taskChan)
+				err = d.dumpTableData(tctx, metaConn, meta, taskChan) //生成插入数据的sql ， 建库建表建数据的task任务都会被放置到taskChan这个channel里面去
 				if err != nil {
 					return err
 				}
@@ -358,13 +377,13 @@ func (d *Dumper) dumpTableData(tctx *tcontext.Context, conn *sql.Conn, meta Tabl
 
 	// Update total rows
 	fieldName, _ := pickupPossibleField(meta, conn)
-	c := estimateCount(tctx, meta.DatabaseName(), meta.TableName(), conn, fieldName, conf)
+	c := estimateCount(tctx, meta.DatabaseName(), meta.TableName(), conn, fieldName, conf) //预估备份表的数据行数
 	AddCounter(estimateTotalRowsCounter, conf.Labels, float64(c))
 
 	if conf.Rows == UnspecifiedSize {
 		return d.sequentialDumpTable(tctx, conn, meta, taskChan)
 	}
-	return d.concurrentDumpTable(tctx, conn, meta, taskChan)
+	return d.concurrentDumpTable(tctx, conn, meta, taskChan) //这里
 }
 
 func (d *Dumper) buildConcatTask(tctx *tcontext.Context, conn *sql.Conn, meta TableMeta) (*TaskTableData, error) {
@@ -538,7 +557,7 @@ func (d *Dumper) concurrentDumpTable(tctx *tcontext.Context, conn *sql.Conn, met
 	for max.Cmp(cutoff) >= 0 {
 		nextCutOff := new(big.Int).Add(cutoff, bigEstimatedStep)
 		where := fmt.Sprintf("%s(`%s` >= %d AND `%s` < %d)", nullValueCondition, escapeString(field), cutoff, escapeString(field), nextCutOff)
-		query := buildSelectQuery(db, tbl, selectField, "", buildWhereCondition(conf, where), orderByClause)
+		query := buildSelectQuery(db, tbl, selectField, "", buildWhereCondition(conf, where), orderByClause) //*****构建查表语句，类似: SELECT age FROM TEST.USER;******
 		if len(nullValueCondition) > 0 {
 			nullValueCondition = ""
 		}
@@ -945,7 +964,7 @@ func dumpTableMeta(conf *Config, conn *sql.Conn, db string, table *TableInfo) (T
 		meta.showCreateView = createViewSQL
 		return meta, nil
 	}
-	createTableSQL, err := ShowCreateTable(conn, db, tbl)
+	createTableSQL, err := ShowCreateTable(conn, db, tbl) //生成建表语句
 	if err != nil {
 		return nil, err
 	}

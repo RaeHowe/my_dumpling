@@ -82,7 +82,7 @@ func (w *Writer) run(taskStream <-chan Task) error {
 				return nil
 			}
 			w.receivedTaskCount++
-			err := w.handleTask(task)
+			err := w.handleTask(task) //处理任务入口
 			if err != nil {
 				return err
 			}
@@ -92,7 +92,7 @@ func (w *Writer) run(taskStream <-chan Task) error {
 }
 
 func (w *Writer) handleTask(task Task) error {
-	switch t := task.(type) {
+	switch t := task.(type) { //区分任务类型，分为建表,建库,建数据,建元数据四种
 	case *TaskDatabaseMeta:
 		return w.WriteDatabaseMeta(t.DatabaseName, t.CreateDatabaseSQL)
 	case *TaskTableMeta:
@@ -186,7 +186,7 @@ func (w *Writer) WriteTableData(meta TableMeta, ir TableDataIR, currentChunk int
 			}
 		}
 		defer ir.Close()
-		return w.tryToWriteTableData(tctx, meta, ir, currentChunk)
+		return w.tryToWriteTableData(tctx, meta, ir, currentChunk) //看这里
 	}, newDumpChunkBackoffer(canRebuildConn(conf.Consistency, conf.TransactionalConsistency)))
 }
 
@@ -201,7 +201,7 @@ func (w *Writer) tryToWriteTableData(tctx *tcontext.Context, meta TableMeta, ir 
 	somethingIsWritten := false
 	for {
 		fileWriter, tearDown := buildInterceptFileWriter(tctx, w.extStorage, fileName, conf.CompressType)
-		n, err := format.WriteInsert(tctx, conf, meta, ir, fileWriter)
+		n, err := format.WriteInsert(tctx, conf, meta, ir, fileWriter) //看这里
 		tearDown(tctx)
 		if err != nil {
 			return err
